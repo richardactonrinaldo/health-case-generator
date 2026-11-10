@@ -3,3 +3,4 @@ anthropic>=0.40
 numpy
 pandas
 openpyxl
+cryptography

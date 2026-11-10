@@ -7,14 +7,18 @@ and an instructor answer key with beginner-friendly Excel steps.
 Run locally:  streamlit run app.py
 """
 
+import base64
+import hashlib
 import io
 import json
 import re
+import zlib
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import anthropic
+from cryptography.fernet import Fernet, InvalidToken
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -339,6 +343,58 @@ def build_answer_key(spec, df, tables, messy):
 
 
 # --------------------------------------------------------------------------
+# Case codes: everything needed to rebuild a case exactly, encrypted so students
+# can't read the hidden relationships. The key comes from INSTRUCTOR_PASSWORD
+# (or the API key if none is set), so changing that password invalidates old codes.
+# --------------------------------------------------------------------------
+
+CODE_PREFIX = "HCG1-"
+
+
+def _fernet():
+    secret_text = secret("INSTRUCTOR_PASSWORD") or secret("ANTHROPIC_API_KEY") or "local"
+    key = base64.urlsafe_b64encode(hashlib.sha256(("hcg-case-code:" + secret_text).encode()).digest())
+    return Fernet(key)
+
+
+def make_case_code(spec, n_rows, messy, seed, name):
+    payload = json.dumps(
+        {"spec": spec, "n_rows": n_rows, "messy": messy, "seed": seed, "name": name},
+        separators=(",", ":"),
+    ).encode()
+    return CODE_PREFIX + _fernet().encrypt(zlib.compress(payload, 9)).decode()
+
+
+def read_case_code(code):
+    code = re.sub(r"\s+", "", code or "")
+    if not code.startswith(CODE_PREFIX):
+        raise ValueError("That doesn't look like a case code (it should start with HCG1-).")
+    try:
+        data = _fernet().decrypt(code[len(CODE_PREFIX):].encode())
+    except InvalidToken:
+        raise ValueError("The case code is damaged, or was made when a different instructor password was set.")
+    return json.loads(zlib.decompress(data))
+
+
+def build_case(spec, n_rows, messy, seed, name, with_key, status=None):
+    say = status.write if status else (lambda _: None)
+    say("Generating synthetic data...")
+    clean = generate_data(spec, n_rows, seed)
+    student_data = add_mess(clean, spec, seed) if messy else clean
+    analysis_data, tables, key_md = clean, None, None
+    if with_key:
+        say("Computing the solution...")
+        analysis_data = standard_clean(student_data, spec) if messy else clean
+        tables = compute_solution(analysis_data, spec)
+        say("Writing the answer key...")
+        key_md = build_answer_key(spec, analysis_data, tables, messy)
+    return dict(
+        spec=spec, clean=clean, student=student_data, analysis=analysis_data, tables=tables,
+        key=key_md, name=name, code=make_case_code(spec, n_rows, messy, seed, name),
+    )
+
+
+# --------------------------------------------------------------------------
 # Excel output
 # --------------------------------------------------------------------------
 
@@ -388,7 +444,7 @@ def _write_text(ws, lines, width=100):
         c.alignment = Alignment(wrap_text=True, vertical="top")
 
 
-def student_workbook(spec, data):
+def student_workbook(spec, data, code=None):
     wb = Workbook()
     ws = wb.active
     ws.title = "Client Request"
@@ -400,6 +456,8 @@ def student_workbook(spec, data):
         "**Your tasks**",
         *[f"{i + 1}. {q}" for i, q in enumerate(spec["questions"])],
     ]
+    if code:
+        lines += ["", "**Case code** (do not edit; your instructor uses it to check your work)", code]
     _write_text(ws, lines)
 
     ws2 = wb.create_sheet("Data")
@@ -478,31 +536,41 @@ def main():
         difficulty = st.radio("Difficulty", list(DIFFICULTY))
         n_rows = st.slider("Rows of data", 100, 2000, 300, step=50)
         messy = st.checkbox("Add messy data for a cleaning exercise")
-        seed = st.number_input("Random seed (0 = new random case)", min_value=0, value=0, step=1)
-        go = st.button("Generate case", type="primary", use_container_width=True)
 
-    if go:
-        seed_used = int(seed) or int(np.random.default_rng().integers(1, 1_000_000))
+        # Instructor mode: without INSTRUCTOR_PASSWORD in secrets (e.g. running locally),
+        # everyone sees the answer key. With it set, only the instructor does.
+        instructor_pw = secret("INSTRUCTOR_PASSWORD")
+        rebuild, code_in = False, ""
+        go = st.button("Generate case", type="primary", use_container_width=True)
+        with st.expander("Instructor"):
+            if instructor_pw:
+                entered = st.text_input("Instructor password", type="password")
+                is_instructor = entered == instructor_pw
+                if entered and not is_instructor:
+                    st.error("Incorrect instructor password.")
+            else:
+                is_instructor = True
+            if is_instructor:
+                st.caption("Answer key included. Paste a student's case code to rebuild their case with its key.")
+                code_in = st.text_area("Case code", height=100)
+                rebuild = st.button("Rebuild case", use_container_width=True)
+
+    if go or rebuild:
         try:
             with st.status("Building the case...", expanded=True) as status:
-                st.write("Writing the client request and data design...")
-                spec = get_spec(scenario_text, DIFFICULTY[difficulty])
-                st.write("Generating synthetic data...")
-                clean = generate_data(spec, n_rows, seed_used)
-                student_data = add_mess(clean, spec, seed_used) if messy else clean
-                st.write("Computing the solution...")
-                analysis_data = standard_clean(student_data, spec) if messy else clean
-                tables = compute_solution(analysis_data, spec)
-                st.write("Writing the answer key...")
-                key_md = build_answer_key(spec, analysis_data, tables, messy)
+                if rebuild:
+                    info = read_case_code(code_in)
+                    spec, rows, mess, seed, name = (info[k] for k in ("spec", "n_rows", "messy", "seed", "name"))
+                else:
+                    status.write("Writing the client request and data design...")
+                    spec = get_spec(scenario_text, DIFFICULTY[difficulty])
+                    rows, mess, name = n_rows, messy, slug(choice)
+                    seed = int(np.random.default_rng().integers(1, 1_000_000))
+                st.session_state["case"] = build_case(spec, rows, mess, seed, name, is_instructor, status)
                 status.update(label="Case ready", state="complete")
         except Exception as e:  # show a friendly error instead of a stack trace
             st.error(f"Something went wrong: {e}")
             st.stop()
-        st.session_state["case"] = dict(
-            spec=spec, clean=clean, student=student_data, analysis=analysis_data, tables=tables,
-            key=key_md, seed=seed_used, name=slug(choice),
-        )
 
     case = st.session_state.get("case")
     if not case:
@@ -510,41 +578,47 @@ def main():
         return
 
     spec = case["spec"]
+    show_key = is_instructor and case["key"] is not None
     st.subheader(f"{spec['organization']}")
-    st.caption(f"Seed {case['seed']}: enter this seed to recreate the same dataset.")
+    with st.expander("Case code"):
+        st.caption("This code is also in the student file. Submit it with your work so your instructor can check it.")
+        st.code(case["code"], language=None, wrap_lines=True)
 
     c1, c2 = st.columns(2)
     c1.download_button(
         "⬇️ Student file (memo + data)",
-        student_workbook(spec, case["student"]),
+        student_workbook(spec, case["student"], case["code"]),
         file_name=f"{case['name']}_student.xlsx",
         use_container_width=True,
     )
-    c2.download_button(
-        "⬇️ Instructor file (key + results)",
-        instructor_workbook(spec, case["analysis"], case["tables"], case["key"],
-                            original=case["clean"] if case["analysis"] is not case["clean"] else None),
-        file_name=f"{case['name']}_instructor.xlsx",
-        use_container_width=True,
-    )
+    if show_key:
+        c2.download_button(
+            "⬇️ Instructor file (key + results)",
+            instructor_workbook(spec, case["analysis"], case["tables"], case["key"],
+                                original=case["clean"] if case["analysis"] is not case["clean"] else None),
+            file_name=f"{case['name']}_instructor.xlsx",
+            use_container_width=True,
+        )
 
-    t1, t2, t3, t4 = st.tabs(["Client request", "Data", "Answer key", "Hidden relationships"])
-    with t1:
+    tab_names = ["Client request", "Data"] + (["Answer key", "Hidden relationships"] if show_key else [])
+    tabs = st.tabs(tab_names)
+    with tabs[0]:
         st.markdown(f"**From:** {spec['client_name']}, {spec['client_role']}")
         st.write(spec["memo"])
         st.markdown("**Tasks**")
         for i, q in enumerate(spec["questions"], start=1):
             st.markdown(f"{i}. {q}")
-    with t2:
+    with tabs[1]:
         st.dataframe(case["student"], use_container_width=True, height=400)
-    with t3:
-        st.markdown(case["key"])
-        for title, tbl in case["tables"]:
-            st.markdown(f"**{title}**")
-            st.dataframe(tbl, use_container_width=True, hide_index=True)
-    with t4:
-        for r in spec["relationships"]:
-            st.markdown(f"- **{r['source']} → {r['target']}**: {r['description']}")
+    if show_key:
+        with tabs[2]:
+            st.markdown(case["key"])
+            for title, tbl in case["tables"]:
+                st.markdown(f"**{title}**")
+                st.dataframe(tbl, use_container_width=True, hide_index=True)
+        with tabs[3]:
+            for r in spec["relationships"]:
+                st.markdown(f"- **{r['source']} → {r['target']}**: {r['description']}")
 
 
 if __name__ == "__main__":
