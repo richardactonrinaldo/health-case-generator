@@ -77,8 +77,11 @@ Return ONLY a JSON object. No markdown fences, no commentary. Schema:
   "memo": "150-250 word memo from the client to the student analyst. Realistic and a little ambiguous, states the business problem in plain language. Never reveals the hidden relationships or any answers.",
   "questions": ["3 to 5 specific analysis tasks the student must complete"],
   "variables": [ ... ],
-  "relationships": [ ... ]
+  "relationships": [ ... ],
+  "analyses": [{"type": "two_way", "target": "...", "rows": "...", "columns": "..."}]
 }
+
+"analyses" lists any two-way PivotTables the questions need (an average or Yes-rate of a target broken down by two categorical variables at once). Use an empty list if no question needs one.
 
 Variable types (exact keys):
 - {"name": "PatientID", "type": "id", "prefix": "P"}
@@ -292,10 +295,51 @@ def standard_clean(messy, spec):
 # Solution (computed from the clean data, so the key is always correct)
 # --------------------------------------------------------------------------
 
+def _pair_table(df, t, s, t_type, s_type):
+    """One result table for target t against source s, matching what Excel would give."""
+    if t_type == "numeric" and s_type == "numeric":
+        pair = df[[s, t]].dropna()
+        slope, intercept = np.polyfit(pair[s], pair[t], 1)
+        r_val = pair[s].corr(pair[t])
+        tbl = pd.DataFrame({
+            "Measure": [f"CORREL({s}, {t})", f"SLOPE({t}, {s})", f"INTERCEPT({t}, {s})", f"RSQ({t}, {s})"],
+            "Value": [round(r_val, 3), round(slope, 4), round(intercept, 4), round(r_val ** 2, 3)],
+        })
+        return f"Correlation of {s} with {t}", tbl
+    if t_type == "numeric":
+        tbl = df.dropna(subset=[t]).groupby(s)[t].agg(["count", "mean", "median"]).round(2).reset_index()
+        return f"Average {t} by {s}", tbl
+    if s_type == "numeric":
+        tbl = df.dropna(subset=[t]).groupby(t)[s].agg(["count", "mean", "median"]).round(2).reset_index()
+        return f"Average {s} by {t}", tbl
+    g = df.dropna(subset=[t]).groupby(s)[t]
+    tbl = pd.DataFrame({
+        "Count": g.size(),
+        f"{t} = Yes": g.apply(lambda x: (x == "Yes").sum()),
+        "Percent Yes": g.apply(lambda x: round((x == "Yes").mean() * 100, 1)),
+    }).reset_index()
+    return f"{t} rate by {s}", tbl
+
+
+def _two_way_table(df, target, rows, cols, t_type):
+    data = df.dropna(subset=[target, rows, cols])
+    if t_type == "binary":
+        data = data.assign(**{target: (data[target] == "Yes") * 100.0})
+        title = f"Percent {target} = Yes by {rows} and {cols}"
+    else:
+        title = f"Average {target} by {rows} and {cols}"
+    tbl = data.pivot_table(index=rows, columns=cols, values=target, aggfunc="mean").round(2)
+    tbl.columns = [str(c) for c in tbl.columns]
+    return title, tbl.reset_index()
+
+
 def compute_solution(df, spec):
+    """Results for every comparison the tasks could ask about, not only the built-in relationships."""
     vars_ = {v["name"]: v for v in spec["variables"]}
-    numeric = [v["name"] for v in spec["variables"] if v["type"] == "numeric"]
-    cats = [v["name"] for v in spec["variables"] if v["type"] in ("categorical", "binary")]
+    kind = {n: v["type"] for n, v in vars_.items()}
+    numeric = [n for n, k in kind.items() if k == "numeric"]
+    cats = [n for n, k in kind.items() if k in ("categorical", "binary")]
+    groupers = [n for n, k in kind.items() if k == "categorical"]
     tables = []
 
     if numeric:
@@ -308,34 +352,36 @@ def compute_solution(df, spec):
         freq["Percent"] = (freq["Count"] / df[c].notna().sum() * 100).round(1)
         tables.append((f"Frequency of {c}", freq))
 
-    for r in spec["relationships"]:
-        t, s = r["target"], r["source"]
-        t_num = vars_[t]["type"] == "numeric"
-        s_num = vars_[s]["type"] == "numeric"
-        if t_num and not s_num:
-            tbl = df.groupby(s)[t].agg(["count", "mean", "median"]).round(2).reset_index()
-            title = f"Average {t} by {s}"
-        elif t_num and s_num:
-            pair = df[[s, t]].dropna()
-            slope, intercept = np.polyfit(pair[s], pair[t], 1)
-            r_val = pair[s].corr(pair[t])
-            tbl = pd.DataFrame({
-                "Measure": [f"CORREL({s}, {t})", f"SLOPE({t}, {s})", f"INTERCEPT({t}, {s})", f"RSQ({t}, {s})"],
-                "Value": [round(r_val, 3), round(slope, 4), round(intercept, 4), round(r_val ** 2, 3)],
-            })
-            title = f"Correlation of {s} with {t}"
-        elif not s_num:
-            g = df.dropna(subset=[t]).groupby(s)[t]
-            tbl = pd.DataFrame({
-                "Count": g.size(),
-                f"{t} = Yes": g.apply(lambda x: (x == "Yes").sum()),
-                "Percent Yes": g.apply(lambda x: round((x == "Yes").mean() * 100, 1)),
-            }).reset_index()
-            title = f"{t} rate by {s}"
-        else:
-            tbl = df.groupby(t)[s].agg(["count", "mean", "median"]).round(2).reset_index()
-            title = f"Average {s} by {t}"
-        tables.append((title, tbl))
+    # Built-in relationships first, then every other pairing of variables.
+    pairs = [(r["target"], r["source"]) for r in spec["relationships"]]
+    for i, a in enumerate(numeric):
+        for b in numeric[i + 1:]:
+            pairs.append((b, a))
+    pairs += [(t, s) for t in numeric for s in cats]
+    pairs += [(t, s) for t in cats if kind[t] == "binary" for s in cats + numeric if s != t]
+    seen = set()
+    for t, s in pairs:
+        if frozenset((t, s)) in seen and kind[t] == kind[s] == "numeric":
+            continue
+        seen.add(frozenset((t, s)))
+        title, tbl = _pair_table(df, t, s, kind[t], kind[s])
+        if title not in seen:  # e.g. a numeric by a Yes/No variable can be reached two ways
+            seen.add(title)
+            tables.append((title, tbl))
+
+    # Two-way PivotTables: those the case design asks for, or (for older case codes)
+    # the main outcome variables by each pair of categorical variables.
+    two_way = [a for a in spec.get("analyses", []) if a.get("type") == "two_way"
+               and kind.get(a.get("target")) in ("numeric", "binary")
+               and kind.get(a.get("rows")) in ("categorical", "binary")
+               and kind.get(a.get("columns")) in ("categorical", "binary")
+               and len({a["target"], a["rows"], a["columns"]}) == 3]
+    if not spec.get("analyses"):
+        targets = list(dict.fromkeys(r["target"] for r in spec["relationships"]))
+        two_way = [{"target": t, "rows": r, "columns": c} for t in targets
+                   for i, r in enumerate(groupers) for c in groupers[i + 1:]][:6]
+    for a in two_way:
+        tables.append(_two_way_table(df, a["target"], a["rows"], a["columns"], kind[a["target"]]))
     return tables
 
 
