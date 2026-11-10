@@ -34,6 +34,18 @@ SCENARIOS = {
     "Clinic no-show appointments": "An outpatient clinic wants to reduce missed appointments and understand who misses them.",
 }
 
+# Instructor-only dataset types: different topics and row structures from the practice
+# scenarios, so assessment cases can't be generated (with solutions) by students.
+INSTRUCTOR_TYPES = {
+    "Patient experience survey (1-5 ratings)": "Each row is one completed patient experience survey from an Ontario hospital. Include several 1-5 rating questions (numeric, decimals 0, min 1, max 5) plus unit, visit type and age group. The client wants to know what drives overall satisfaction.",
+    "Monthly unit performance metrics": "Each row is one hospital unit for one month (12 months x several units). Include unit name, month (date), occupancy percent, nursing hours per patient day, falls, and hospital-acquired infections. The client wants to compare units and spot trends.",
+    "Laboratory test turnaround": "Each row is one lab test order at a hospital laboratory. Include test type, ordering department, priority (STAT/Routine), shift, turnaround time in minutes, and whether the result was abnormal. The client wants to know why some results are slow.",
+    "Pharmacy dispensing and adherence": "Each row is one prescription filled at a community pharmacy. Include drug class, patient age group, days supplied, cost in dollars, number of refills, and whether the patient refilled on time. The client wants to understand adherence and costs.",
+    "Home care visits": "Each row is one scheduled home care visit in a rural Ontario region. Include visit type, region, travel distance in km, visit duration in minutes, worker experience in years, and whether the visit was missed. The client wants to reduce missed visits.",
+    "Paramedic (EMS) calls": "Each row is one 911 ambulance call. Include call priority, region (urban/rural), time of day, response time in minutes, patient age, and whether the patient was transported. The client wants to understand response times.",
+    "Long-term care resident assessments": "Each row is one resident's quarterly assessment in a long-term care home. Include age, mobility score, number of medications, cognitive score, home name, and whether the resident had a fall that quarter. The client wants to know who is at risk of falls.",
+}
+
 DIFFICULTY = {
     "Beginner: descriptive stats & PivotTables": (
         "Students are beginner Excel users. Use mostly categorical sources for relationships, "
@@ -471,7 +483,7 @@ def student_workbook(spec, data, code=None):
     return buf.getvalue()
 
 
-def instructor_workbook(spec, clean, tables, key_md, original=None):
+def instructor_workbook(spec, clean, tables, key_md, original=None, code=None):
     wb = Workbook()
     ws = wb.active
     ws.title = "Answer Key"
@@ -488,8 +500,11 @@ def instructor_workbook(spec, clean, tables, key_md, original=None):
         {"Target": r["target"], "Source": r["source"], "Built-in effect": r["description"]}
         for r in spec["relationships"]
     ])
-    _write_table(ws3, rel)
+    next_row = _write_table(ws3, rel)
     _autowidth(ws3)
+    if code:
+        ws3.cell(row=next_row, column=1, value="Case code (paste into Rebuild case to recreate this case)").font = ARIAL_BOLD
+        ws3.cell(row=next_row + 1, column=1, value=code).font = ARIAL
 
     ws4 = wb.create_sheet("Cleaned Data" if original is not None else "Data")
     _write_table(ws4, clean)
@@ -516,11 +531,30 @@ def slug(text):
     return re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_")[:40]
 
 
+def case_controls(options, prefix, allow_custom):
+    """The generation controls, shared by the practice and instructor sections."""
+    labels = [*options, "Custom scenario..."] if allow_custom else list(options)
+    choice = st.selectbox("Scenario" if prefix == "p" else "Dataset type", labels, key=f"{prefix}_choice")
+    if choice == "Custom scenario...":
+        text = st.text_area("Describe the scenario and what each row is", key=f"{prefix}_custom",
+                            value="Each row is ... The client wants to know ...")
+    else:
+        text = options[choice]
+    return dict(
+        choice=choice,
+        text=text,
+        difficulty=st.radio("Difficulty", list(DIFFICULTY), key=f"{prefix}_diff"),
+        n_rows=st.slider("Rows of data", 100, 2000, 300, step=50, key=f"{prefix}_rows"),
+        messy=st.checkbox("Add messy data for a cleaning exercise", key=f"{prefix}_messy"),
+    )
+
+
 def main():
     st.set_page_config(page_title="Health Analytics Case Generator", page_icon="🩺", layout="wide")
     st.title("🩺 Health Analytics Case Generator")
     st.caption("HINF1009: client request → synthetic data → solution")
 
+    request = None  # (settings, mode) for a new case, or ("rebuild", code)
     with st.sidebar:
         if not secret("ANTHROPIC_API_KEY"):
             st.error("Add ANTHROPIC_API_KEY to the app's secrets to generate cases.")
@@ -530,88 +564,84 @@ def main():
                 st.info("Enter the class password to generate cases.")
                 st.stop()
 
-        choice = st.selectbox("Scenario", [*SCENARIOS, "Custom scenario..."])
-        if choice == "Custom scenario...":
-            scenario_text = st.text_area("Describe the scenario", "A long-term care home wants to ...")
-        else:
-            scenario_text = SCENARIOS[choice]
-        difficulty = st.radio("Difficulty", list(DIFFICULTY))
-        n_rows = st.slider("Rows of data", 100, 2000, 300, step=50)
-        messy = st.checkbox("Add messy data for a cleaning exercise")
+        st.subheader("Practice")
+        practice = case_controls(SCENARIOS, "p", allow_custom=False)
+        if st.button("Generate practice case", type="primary", use_container_width=True):
+            request = ("new", practice, "practice")
 
-        # Instructor mode: without INSTRUCTOR_PASSWORD in secrets (e.g. running locally),
-        # everyone sees the answer key. With it set, only the instructor does.
+        # Without INSTRUCTOR_PASSWORD in secrets (e.g. running locally), the section is open.
         instructor_pw = secret("INSTRUCTOR_PASSWORD")
-        rebuild, code_in = False, ""
-        go = st.button("Generate case", type="primary", use_container_width=True)
         with st.expander("Instructor"):
+            is_instructor = True
             if instructor_pw:
                 entered = st.text_input("Instructor password", type="password")
                 is_instructor = entered == instructor_pw
                 if entered and not is_instructor:
                     st.error("Incorrect instructor password.")
-            else:
-                is_instructor = True
             if is_instructor:
-                st.caption("Answer key included. Paste a student's case code to rebuild their case with its key.")
-                code_in = st.text_area("Case code", height=100)
-                rebuild = st.button("Rebuild case", use_container_width=True)
+                st.caption("Dataset types for assignments and tests. Students can't generate these.")
+                inst = case_controls(INSTRUCTOR_TYPES, "i", allow_custom=True)
+                if st.button("Generate instructor case", type="primary", use_container_width=True):
+                    request = ("new", inst, "instructor")
+                st.divider()
+                code_in = st.text_area("Rebuild from a case code", height=80)
+                if st.button("Rebuild case", use_container_width=True):
+                    request = ("rebuild", code_in, "instructor")
 
-    case = st.session_state.get("case")
-    add_key = False
-    if is_instructor and case and case["key"] is None:
-        st.info("This case was generated without the answer key.")
-        add_key = st.button("Add answer key to this case")
-
-    if add_key:
-        code_in, rebuild = case["code"], True
-
-    if go or rebuild:
+    if request:
+        kind, payload, mode = request
         try:
             with st.status("Building the case...", expanded=True) as status:
-                if rebuild:
-                    info = read_case_code(code_in)
+                if kind == "rebuild":
+                    info = read_case_code(payload)
                     spec, rows, mess, seed, name = (info[k] for k in ("spec", "n_rows", "messy", "seed", "name"))
                 else:
                     status.write("Writing the client request and data design...")
-                    spec = get_spec(scenario_text, DIFFICULTY[difficulty])
-                    rows, mess, name = n_rows, messy, slug(choice)
+                    spec = get_spec(payload["text"], DIFFICULTY[payload["difficulty"]])
+                    rows, mess, name = payload["n_rows"], payload["messy"], slug(payload["choice"])
                     seed = int(np.random.default_rng().integers(1, 1_000_000))
-                st.session_state["case"] = build_case(spec, rows, mess, seed, name, is_instructor, status)
+                case = build_case(spec, rows, mess, seed, name, True, status)
+                case["mode"] = mode
+                st.session_state["case"] = case
                 status.update(label="Case ready", state="complete")
         except Exception as e:  # show a friendly error, but keep showing the current case
             st.error(f"Something went wrong: {e}")
 
     case = st.session_state.get("case")
     if not case:
-        st.info("Choose a scenario in the sidebar and select **Generate case**.")
+        st.info("Choose a scenario in the sidebar and select **Generate practice case**.")
+        return
+    if case.get("mode") == "instructor" and not is_instructor:
+        st.info("Choose a scenario in the sidebar and select **Generate practice case**.")
         return
 
     spec = case["spec"]
-    show_key = is_instructor and case["key"] is not None
-    st.subheader(f"{spec['organization']}")
-    with st.expander("Case code"):
-        st.caption("This code is also in the student file. Submit it with your work so your instructor can check it.")
-        st.code(case["code"], language=None, wrap_lines=True)
+    instructor_case = case.get("mode") == "instructor"
+    st.subheader(spec["organization"])
+    if instructor_case:
+        with st.expander("Case code"):
+            st.caption("Also saved in the instructor file. Paste it into Rebuild case to recreate this case.")
+            st.code(case["code"], language=None, wrap_lines=True)
+    else:
+        st.caption("Practice case: try the tasks yourself in Excel before opening the Solution tab.")
 
+    original = case["clean"] if case["analysis"] is not case["clean"] else None
     c1, c2 = st.columns(2)
     c1.download_button(
         "⬇️ Student file (memo + data)",
-        student_workbook(spec, case["student"], case["code"]),
+        student_workbook(spec, case["student"]),
         file_name=f"{case['name']}_student.xlsx",
         use_container_width=True,
     )
-    if show_key:
-        c2.download_button(
-            "⬇️ Instructor file (key + results)",
-            instructor_workbook(spec, case["analysis"], case["tables"], case["key"],
-                                original=case["clean"] if case["analysis"] is not case["clean"] else None),
-            file_name=f"{case['name']}_instructor.xlsx",
-            use_container_width=True,
-        )
+    c2.download_button(
+        "⬇️ Instructor file (key + results)" if instructor_case else "⬇️ Solution file",
+        instructor_workbook(spec, case["analysis"], case["tables"], case["key"], original=original,
+                            code=case["code"] if instructor_case else None),
+        file_name=f"{case['name']}_{'instructor' if instructor_case else 'solution'}.xlsx",
+        use_container_width=True,
+    )
 
-    tab_names = ["Client request", "Data"] + (["Answer key", "Hidden relationships"] if show_key else [])
-    tabs = st.tabs(tab_names)
+    tabs = st.tabs(["Client request", "Data", "Answer key" if instructor_case else "Solution", "Hidden relationships"])
     with tabs[0]:
         st.markdown(f"**From:** {spec['client_name']}, {spec['client_role']}")
         st.write(spec["memo"])
@@ -620,15 +650,14 @@ def main():
             st.markdown(f"{i}. {q}")
     with tabs[1]:
         st.dataframe(case["student"], use_container_width=True, height=400)
-    if show_key:
-        with tabs[2]:
-            st.markdown(case["key"])
-            for title, tbl in case["tables"]:
-                st.markdown(f"**{title}**")
-                st.dataframe(tbl, use_container_width=True, hide_index=True)
-        with tabs[3]:
-            for r in spec["relationships"]:
-                st.markdown(f"- **{r['source']} → {r['target']}**: {r['description']}")
+    with tabs[2]:
+        st.markdown(case["key"])
+        for title, tbl in case["tables"]:
+            st.markdown(f"**{title}**")
+            st.dataframe(tbl, use_container_width=True, hide_index=True)
+    with tabs[3]:
+        for r in spec["relationships"]:
+            st.markdown(f"- **{r['source']} → {r['target']}**: {r['description']}")
 
 
 if __name__ == "__main__":

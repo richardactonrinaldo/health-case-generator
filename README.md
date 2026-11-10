@@ -18,8 +18,13 @@ and an instructor answer key with beginner Excel steps.
 ## Deploy free on Streamlit Community Cloud
 1. Put this folder in a GitHub repository (secrets.toml is excluded by .gitignore).
 2. At share.streamlit.io, create an app pointing to app.py.
-3. In App settings > Secrets, paste ANTHROPIC_API_KEY (and optionally APP_PASSWORD).
+3. In App settings > Secrets, paste ANTHROPIC_API_KEY (and optionally APP_PASSWORD and INSTRUCTOR_PASSWORD).
 
 ## Adding scenarios
 Edit the SCENARIOS dictionary at the top of app.py, or use "Custom scenario..." in the app.
-The seed shown after each run recreates the same dataset.
+## Practice vs instructor
+Students (class password) generate practice cases from the practice scenarios and get the
+data plus the full solution. The Instructor section (INSTRUCTOR_PASSWORD) has the same controls
+with a different set of dataset types for assignments and tests, a custom option, case codes,
+and Rebuild case. Without INSTRUCTOR_PASSWORD set, the Instructor section is open to everyone
+(convenient when running locally).
