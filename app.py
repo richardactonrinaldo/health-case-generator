@@ -316,7 +316,13 @@ def compute_solution(df, spec):
             tbl = df.groupby(s)[t].agg(["count", "mean", "median"]).round(2).reset_index()
             title = f"Average {t} by {s}"
         elif t_num and s_num:
-            tbl = pd.DataFrame({"Measure": [f"CORREL({s}, {t})"], "Value": [round(df[s].corr(df[t]), 3)]})
+            pair = df[[s, t]].dropna()
+            slope, intercept = np.polyfit(pair[s], pair[t], 1)
+            r_val = pair[s].corr(pair[t])
+            tbl = pd.DataFrame({
+                "Measure": [f"CORREL({s}, {t})", f"SLOPE({t}, {s})", f"INTERCEPT({t}, {s})", f"RSQ({t}, {s})"],
+                "Value": [round(r_val, 3), round(slope, 4), round(intercept, 4), round(r_val ** 2, 3)],
+            })
             title = f"Correlation of {s} with {t}"
         elif not s_num:
             g = df.dropna(subset=[t]).groupby(s)[t]
