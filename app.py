@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import re
+import zipfile
 import zlib
 
 import numpy as np
@@ -682,20 +683,31 @@ def main():
         st.caption("Practice case: try the tasks yourself in Excel before opening the Solution tab.")
 
     original = case["clean"] if case["analysis"] is not case["clean"] else None
+    second = "instructor" if instructor_case else "solution"
+    files = {
+        f"{case['name']}_student.xlsx": student_workbook(spec, case["student"]),
+        f"{case['name']}_{second}.xlsx": instructor_workbook(
+            spec, case["analysis"], case["tables"], case["key"], original=original,
+            code=case["code"] if instructor_case else None),
+    }
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for fname, data in files.items():
+            zf.writestr(fname, data)
+
+    st.download_button(
+        "⬇️ Download both files (.zip)",
+        zip_buf.getvalue(),
+        file_name=f"{case['name']}.zip",
+        mime="application/zip",
+        type="primary",
+        use_container_width=True,
+    )
     c1, c2 = st.columns(2)
-    c1.download_button(
-        "⬇️ Student file (memo + data)",
-        student_workbook(spec, case["student"]),
-        file_name=f"{case['name']}_student.xlsx",
-        use_container_width=True,
-    )
-    c2.download_button(
-        "⬇️ Instructor file (key + results)" if instructor_case else "⬇️ Solution file",
-        instructor_workbook(spec, case["analysis"], case["tables"], case["key"], original=original,
-                            code=case["code"] if instructor_case else None),
-        file_name=f"{case['name']}_{'instructor' if instructor_case else 'solution'}.xlsx",
-        use_container_width=True,
-    )
+    labels = ["Student file only (memo + data)",
+              "Instructor file only (key + results)" if instructor_case else "Solution file only"]
+    for col, label, (fname, data) in zip((c1, c2), labels, files.items()):
+        col.download_button(label, data, file_name=fname, use_container_width=True)
 
     tabs = st.tabs(["Client request", "Data", "Answer key" if instructor_case else "Solution", "Hidden relationships"])
     with tabs[0]:
