@@ -367,6 +367,8 @@ def make_case_code(spec, n_rows, messy, seed, name):
 
 def read_case_code(code):
     code = re.sub(r"\s+", "", code or "")
+    if not code:
+        raise ValueError("Paste a case code into the box first.")
     if not code.startswith(CODE_PREFIX):
         raise ValueError("That doesn't look like a case code (it should start with HCG1-).")
     try:
@@ -555,6 +557,15 @@ def main():
                 code_in = st.text_area("Case code", height=100)
                 rebuild = st.button("Rebuild case", use_container_width=True)
 
+    case = st.session_state.get("case")
+    add_key = False
+    if is_instructor and case and case["key"] is None:
+        st.info("This case was generated without the answer key.")
+        add_key = st.button("Add answer key to this case")
+
+    if add_key:
+        code_in, rebuild = case["code"], True
+
     if go or rebuild:
         try:
             with st.status("Building the case...", expanded=True) as status:
@@ -568,9 +579,8 @@ def main():
                     seed = int(np.random.default_rng().integers(1, 1_000_000))
                 st.session_state["case"] = build_case(spec, rows, mess, seed, name, is_instructor, status)
                 status.update(label="Case ready", state="complete")
-        except Exception as e:  # show a friendly error instead of a stack trace
+        except Exception as e:  # show a friendly error, but keep showing the current case
             st.error(f"Something went wrong: {e}")
-            st.stop()
 
     case = st.session_state.get("case")
     if not case:
