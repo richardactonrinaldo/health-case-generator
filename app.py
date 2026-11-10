@@ -115,7 +115,8 @@ Rules:
 - Give exact formulas using the column letters provided and the sheet name Data, e.g. =AVERAGEIF(Data!C:C,"Male",Data!F:F).
 - Prefer simple functions: AVERAGE, MEDIAN, MIN, MAX, STDEV.S, COUNT, COUNTIF, COUNTIFS, AVERAGEIF, AVERAGEIFS, CORREL.
 - For PivotTables, say which fields go in Rows, Columns and Values, and the Values summary (Average, Count).
-- Keep each step short and concrete."""
+- Keep each step short and concrete, and the whole key under about 1,500 words.
+- Always finish every section, including Key findings and Common student mistakes."""
 
 
 def secret(name):
@@ -136,7 +137,10 @@ def ask_claude(system, user, max_tokens=4000):
         system=system,
         messages=[{"role": "user", "content": user}],
     )
-    return "".join(b.text for b in msg.content if b.type == "text")
+    text = "".join(b.text for b in msg.content if b.type == "text")
+    if msg.stop_reason == "max_tokens":
+        raise RuntimeError("The AI response was cut off before it finished. Please try again.")
+    return text
 
 
 def parse_json(text):
@@ -351,7 +355,7 @@ def build_answer_key(spec, df, tables, messy):
         + f"\n\nData sheet: 'Data', {len(df)} rows after cleaning, plus a header row. Columns: {letters}\n\n"
         + f"{note}\n\nComputed results:\n{results}"
     )
-    return ask_claude(KEY_SYSTEM, user, max_tokens=6000)
+    return ask_claude(KEY_SYSTEM, user, max_tokens=16000)
 
 
 # --------------------------------------------------------------------------
