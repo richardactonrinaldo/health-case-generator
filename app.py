@@ -613,23 +613,53 @@ def in_page_downloads(items):
 <script>
   const items = """ + json.dumps(payload) + """;
   const wrap = document.getElementById("wrap"), msg = document.getElementById("msg");
+  const P = window.parent;  // the app page itself (same origin), so this frame is never replaced
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+             || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (isIOS) msg.textContent = "On iPhone, choose Save to Files to pick a folder, or AirDrop/Mail to send to your computer.";
+
+  function bytesOf(it) {
+    const bin = atob(it.b64), bytes = new Uint8Array(bin.length);
+    for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
+    return bytes;
+  }
+  function saveInParent(it, bytes) {
+    const url = P.URL.createObjectURL(new P.Blob([bytes], {type: it.mime}));
+    const a = P.document.createElement("a");
+    a.href = url; a.download = it.name; a.style.display = "none";
+    P.document.body.appendChild(a); a.click();
+    setTimeout(() => { P.URL.revokeObjectURL(url); a.remove(); }, 10000);
+    msg.textContent = "Saving " + it.name + "…";
+  }
+
   items.forEach((it, i) => {
     const b = document.createElement("button");
     b.textContent = it.label; if (i === 0) b.className = "main";
-    b.onclick = () => {
+    b.onclick = async () => {
       try {
-        const bin = atob(it.b64), bytes = new Uint8Array(bin.length);
-        for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
-        const url = URL.createObjectURL(new Blob([bytes], {type: it.mime}));
-        const a = document.createElement("a");
-        a.href = url; a.download = it.name; document.body.appendChild(a); a.click();
-        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 10000);
-        msg.textContent = "Saving " + it.name + "…";
-      } catch (e) { msg.textContent = "Download failed. Use the links below instead."; }
+        const bytes = bytesOf(it);
+        if (isIOS) {
+          const nav = P.navigator.share ? P.navigator : navigator;
+          const file = new P.File([bytes], it.name, {type: it.mime});
+          if (nav.share && (!nav.canShare || nav.canShare({files: [file]}))) {
+            try {
+              await nav.share({files: [file], title: it.name});
+              msg.textContent = "Done.";
+              return;
+            } catch (e) {
+              if (e.name === "AbortError") { msg.textContent = "Cancelled."; return; }
+              // share not allowed here: fall through to a normal download
+            }
+          }
+        }
+        saveInParent(it, bytes);
+      } catch (e) {
+        msg.textContent = "Download failed. Open \u201cDownload not working?\u201d below and use those links.";
+      }
     };
     wrap.appendChild(b);
   });
-</script>""", height=170)
+</script>""", height=190)
 
 
 def collapse_sidebar_on_phone():
