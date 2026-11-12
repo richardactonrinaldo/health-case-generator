@@ -662,6 +662,51 @@ def in_page_downloads(items):
 </script>""", height=190)
 
 
+APP_URL = "https://hinf1009data.streamlit.app/"
+
+
+def in_app_browser_notice():
+    """If the page is open inside another app's built-in browser (e.g. the Blackboard app),
+    where downloads often fail, show a banner with a Copy link button."""
+    components.html("""<script>
+    (function () {
+      const P = window.parent, doc = P.document, ua = navigator.userAgent || "";
+      const iOS = /iPhone|iPad|iPod/.test(ua);
+      const inApp =
+        (iOS && !/Safari\\//.test(ua)) ||                       // iOS app web view (no Safari token)
+        /; wv\\)/.test(ua) ||                                    // Android web view
+        /Blackboard|BbStudent|BbInstructor|FBAN|FBAV|Instagram|LinkedInApp/i.test(ua);
+      if (!inApp || doc.getElementById("hcg-inapp")) return;
+      let url = """ + json.dumps(APP_URL) + """;
+      try { if (window.top.location.origin) url = window.top.location.origin + "/"; } catch (e) {}
+      const bar = doc.createElement("div");
+      bar.id = "hcg-inapp";
+      bar.style.cssText = "position:fixed;left:0;right:0;top:0;z-index:999999;padding:12px 14px;" +
+        "background:#FFF4CE;color:#3D3000;font:15px/1.4 -apple-system,'Segoe UI',sans-serif;" +
+        "box-shadow:0 2px 6px rgba(0,0,0,.2)";
+      bar.innerHTML =
+        "<b>Downloads may not work in this app's built-in browser.</b> " +
+        "Copy the link and paste it into Safari or Chrome." +
+        "<div style='margin-top:8px;display:flex;gap:8px;flex-wrap:wrap'>" +
+        "<button id='hcg-copy' style='padding:8px 14px;border-radius:8px;border:0;background:#FF4B4B;color:#fff;font-size:15px'>Copy link</button>" +
+        "<button id='hcg-close' style='padding:8px 14px;border-radius:8px;border:1px solid #b9a75a;background:transparent;color:#3D3000;font-size:15px'>Dismiss</button>" +
+        "<span id='hcg-url' style='align-self:center;user-select:all;-webkit-user-select:all'></span></div>";
+      doc.body.appendChild(bar);
+      doc.getElementById("hcg-url").textContent = url;
+      doc.getElementById("hcg-close").onclick = () => bar.remove();
+      doc.getElementById("hcg-copy").onclick = async () => {
+        const btn = doc.getElementById("hcg-copy");
+        try { await P.navigator.clipboard.writeText(url); btn.textContent = "Copied ✓"; }
+        catch (e) {
+          const r = doc.createRange(); r.selectNodeContents(doc.getElementById("hcg-url"));
+          const sel = P.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+          btn.textContent = "Press and hold the link to copy";
+        }
+      };
+    })();
+    </script>""", height=0)
+
+
 def collapse_sidebar_on_phone():
     """On narrow screens the sidebar covers the page, so close it and scroll to the top
     once a case starts building. Desktop layouts are left alone."""
@@ -699,6 +744,7 @@ def main():
     st.set_page_config(page_title="Health Analytics Case Generator", page_icon="🩺", layout="wide")
     st.title("🩺 Health Analytics Case Generator")
     st.caption("HINF1009: client request → synthetic data → solution")
+    in_app_browser_notice()
 
     request = None  # (settings, mode) for a new case, or ("rebuild", code)
     with st.sidebar:
