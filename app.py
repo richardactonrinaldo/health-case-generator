@@ -659,7 +659,7 @@ def in_page_downloads(items):
     };
     wrap.appendChild(b);
   });
-</script>""", height=190)
+</script>""", height=110)
 
 
 APP_URL = "https://hinf1009data.streamlit.app/"
@@ -819,7 +819,7 @@ def main():
         st.caption("Practice case: try the tasks yourself in Excel before opening the Solution tab.")
 
     original = case["clean"] if case["analysis"] is not case["clean"] else None
-    second = "instructor" if instructor_case else "solution"
+    second = "instructor" if instructor_case else "Claude_Built_Solutions"
     files = {
         f"{case['name']}_student.xlsx": student_workbook(spec, case["student"]),
         f"{case['name']}_{second}.xlsx": instructor_workbook(
@@ -831,17 +831,12 @@ def main():
         for fname, data in files.items():
             zf.writestr(fname, data)
 
-    labels = ["Student file only (memo + data)",
-              "Instructor file only (key + results)" if instructor_case else "Solution file only"]
     in_page_downloads(
         [("⬇️ Download both files (.zip)", f"{case['name']}.zip", zip_buf.getvalue(), "application/zip")]
-        + [(label, fname, data, XLSX_MIME) for label, (fname, data) in zip(labels, files.items())]
     )
-    with st.expander("Download not working? Try these links instead"):
+    with st.expander("Download not working? Try this link instead"):
         st.download_button("Both files (.zip)", zip_buf.getvalue(), file_name=f"{case['name']}.zip",
                            mime="application/zip", on_click="ignore")
-        for label, (fname, data) in zip(labels, files.items()):
-            st.download_button(label, data, file_name=fname, on_click="ignore")
 
     tabs = st.tabs(["Client request", "Data", "Answer key" if instructor_case else "Solution", "Hidden relationships"])
     with tabs[0]:
