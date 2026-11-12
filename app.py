@@ -18,6 +18,7 @@ import zlib
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import anthropic
 from cryptography.fernet import Fernet, InvalidToken
 from openpyxl import Workbook
@@ -588,6 +589,21 @@ def slug(text):
     return re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_")[:40]
 
 
+def collapse_sidebar_on_phone():
+    """On narrow screens the sidebar covers the page, so close it and scroll to the top
+    once a case starts building. Desktop layouts are left alone."""
+    nonce = np.random.default_rng().integers(1_000_000_000)  # forces the script to run every time
+    components.html(f"""<script>/* {nonce} */
+      const win = window.parent, doc = win.document;
+      if (win.innerWidth < 768) {{
+        const btn = doc.querySelector('button[aria-label="Collapse sidebar"]')
+                 || doc.querySelector('[data-testid="stSidebarCollapseButton"] button');
+        if (btn && btn.getAttribute('aria-expanded') !== 'false') btn.click();
+        win.scrollTo({{top: 0, behavior: 'smooth'}});
+      }}
+    </script>""", height=0)
+
+
 def case_controls(options, prefix, allow_custom):
     """The generation controls, shared by the practice and instructor sections."""
     labels = [*options, "Custom scenario..."] if allow_custom else list(options)
@@ -646,6 +662,7 @@ def main():
                     request = ("rebuild", code_in, "instructor")
 
     if request:
+        collapse_sidebar_on_phone()
         kind, payload, mode = request
         try:
             with st.status("Building the case...", expanded=True) as status:
@@ -702,12 +719,13 @@ def main():
         mime="application/zip",
         type="primary",
         use_container_width=True,
+        on_click="ignore",  # don't rerun the app on download (smoother on phones)
     )
     c1, c2 = st.columns(2)
     labels = ["Student file only (memo + data)",
               "Instructor file only (key + results)" if instructor_case else "Solution file only"]
     for col, label, (fname, data) in zip((c1, c2), labels, files.items()):
-        col.download_button(label, data, file_name=fname, use_container_width=True)
+        col.download_button(label, data, file_name=fname, use_container_width=True, on_click="ignore")
 
     tabs = st.tabs(["Client request", "Data", "Answer key" if instructor_case else "Solution", "Hidden relationships"])
     with tabs[0]:
