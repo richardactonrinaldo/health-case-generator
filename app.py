@@ -589,6 +589,49 @@ def slug(text):
     return re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_")[:40]
 
 
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def in_page_downloads(items):
+    """Download buttons that build each file inside the page and save it directly, so the
+    browser never navigates away (Safari on iPhone otherwise leaves the app).
+    items: list of (label, file_name, bytes, mime); the first is shown as the main button."""
+    payload = [{"label": l, "name": n, "b64": base64.b64encode(d).decode(), "mime": m} for l, n, d, m in items]
+    components.html("""
+<style>
+  :root { --fg:#31333F; --border:rgba(49,51,63,.2); --bg:#fff; --primary:#FF4B4B; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#FAFAFA; --border:rgba(250,250,250,.2); --bg:#0E1117; } }
+  body { margin:0; font-family:"Source Sans Pro","Source Sans 3",-apple-system,"Segoe UI",sans-serif; background:transparent; }
+  .wrap { display:flex; flex-wrap:wrap; gap:10px; }
+  button { flex:1 1 260px; min-height:44px; padding:8px 12px; border-radius:8px; font-size:16px; cursor:pointer;
+           border:1px solid var(--border); background:var(--bg); color:var(--fg); font-family:inherit; }
+  button.main { flex-basis:100%; background:var(--primary); border-color:var(--primary); color:#fff; }
+  button:hover { border-color:var(--primary); }
+  #msg { font-size:14px; color:var(--fg); opacity:.7; margin-top:6px; min-height:18px; }
+</style>
+<div class="wrap" id="wrap"></div><div id="msg"></div>
+<script>
+  const items = """ + json.dumps(payload) + """;
+  const wrap = document.getElementById("wrap"), msg = document.getElementById("msg");
+  items.forEach((it, i) => {
+    const b = document.createElement("button");
+    b.textContent = it.label; if (i === 0) b.className = "main";
+    b.onclick = () => {
+      try {
+        const bin = atob(it.b64), bytes = new Uint8Array(bin.length);
+        for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
+        const url = URL.createObjectURL(new Blob([bytes], {type: it.mime}));
+        const a = document.createElement("a");
+        a.href = url; a.download = it.name; document.body.appendChild(a); a.click();
+        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 10000);
+        msg.textContent = "Saving " + it.name + "…";
+      } catch (e) { msg.textContent = "Download failed. Use the links below instead."; }
+    };
+    wrap.appendChild(b);
+  });
+</script>""", height=170)
+
+
 def collapse_sidebar_on_phone():
     """On narrow screens the sidebar covers the page, so close it and scroll to the top
     once a case starts building. Desktop layouts are left alone."""
@@ -712,20 +755,17 @@ def main():
         for fname, data in files.items():
             zf.writestr(fname, data)
 
-    st.download_button(
-        "⬇️ Download both files (.zip)",
-        zip_buf.getvalue(),
-        file_name=f"{case['name']}.zip",
-        mime="application/zip",
-        type="primary",
-        use_container_width=True,
-        on_click="ignore",  # don't rerun the app on download (smoother on phones)
-    )
-    c1, c2 = st.columns(2)
     labels = ["Student file only (memo + data)",
               "Instructor file only (key + results)" if instructor_case else "Solution file only"]
-    for col, label, (fname, data) in zip((c1, c2), labels, files.items()):
-        col.download_button(label, data, file_name=fname, use_container_width=True, on_click="ignore")
+    in_page_downloads(
+        [("⬇️ Download both files (.zip)", f"{case['name']}.zip", zip_buf.getvalue(), "application/zip")]
+        + [(label, fname, data, XLSX_MIME) for label, (fname, data) in zip(labels, files.items())]
+    )
+    with st.expander("Download not working? Try these links instead"):
+        st.download_button("Both files (.zip)", zip_buf.getvalue(), file_name=f"{case['name']}.zip",
+                           mime="application/zip", on_click="ignore")
+        for label, (fname, data) in zip(labels, files.items()):
+            st.download_button(label, data, file_name=fname, on_click="ignore")
 
     tabs = st.tabs(["Client request", "Data", "Answer key" if instructor_case else "Solution", "Hidden relationships"])
     with tabs[0]:
